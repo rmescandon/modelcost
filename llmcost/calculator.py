@@ -5,6 +5,21 @@ from .providers.litellm import fetch_litellm_prices
 
 VALID_SOURCES = ("litellm", "openrouter", "tokencost", "all")
 
+def list_models(source: str = "litellm") -> list[str]:
+    """Devuelve los modelos disponibles en la fuente indicada."""
+    if source not in ("litellm", "openrouter", "tokencost"):
+        raise ValueError(f"Invalid source '{source}'. Valid values: litellm, openrouter, tokencost")
+
+    if source == "litellm":
+        return sorted(fetch_litellm_prices().keys())
+
+    if source == "openrouter":
+        return sorted(fetch_openrouter_prices().keys())
+
+    if source == "tokencost":
+        from tokencost.constants import TOKEN_COSTS
+        return sorted(TOKEN_COSTS.keys())
+
 
 def calculate_cost(
     model: str,
