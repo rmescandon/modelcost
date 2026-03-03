@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write  # needed to create GitHub Release
+  id-token: write  # needed for PyPI trusted publishing (OIDC)
+
+jobs:
+  validate-tag:
+    name: Validate tag matches package version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Check tag matches pyproject.toml version
+        run: |
+          PKG_VERSION=$(uv run python -c "import importlib.metadata; print(importlib.metadata.version('modelcost'))" 2>/dev/null || \
+                        python -c "import tomllib; f=open('pyproject.toml','rb'); d=tomllib.load(f); print(d['project']['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME}"
+          echo "Package version: $PKG_VERSION"
+          echo "Tag version:     $TAG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Tag '$TAG_VERSION' does not match pyproject.toml version '$PKG_VERSION'"
+            exit 1
+          fi
+
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    needs: validate-tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/modelcost
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Publish to TestPyPI
+        run: uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always
+        env:
+          UV_PUBLISH_URL: https://test.pypi.org/legacy/
+
+  smoke-test:
+    name: Smoke test from TestPyPI
+    runs-on: ubuntu-latest
+    needs: publish-testpypi
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+        env:
+          GITHUB_WORKSPACE: "."
+
+      - name: Wait for TestPyPI index to refresh
+        run: sleep 30
+
+      - name: Install from TestPyPI
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME}"
+          uv pip install \
+            --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ \
+            "modelcost==${TAG_VERSION}"
+
+      - name: Verify CLI is available
+        run: modelcost --help
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: smoke-test
+    environment:
+      name: pypi
+      url: https://pypi.org/p/modelcost
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish-pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
