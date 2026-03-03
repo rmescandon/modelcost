@@ -32,8 +32,18 @@ modelcost = "modelcost.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
     "ruff>=0.15.4",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=modelcost --cov-report=term-missing --cov-report=html"
+
+[tool.coverage.run]
+source = ["modelcost"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
