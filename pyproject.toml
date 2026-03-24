@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "modelcost"
-version = "0.1.4"
+version = "0.1.5"
 description = "Calculate LLM API call costs from token usage"
 readme = "README.md"
 license = { text = "MIT" }
