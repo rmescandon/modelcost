@@ -31,6 +31,9 @@ def calculate_cost(
     output_tokens: int,
     source: str = "litellm",
 ) -> CostResult:
+    if input_tokens < 0 or output_tokens < 0:
+        raise ValueError("input_tokens and output_tokens must be >= 0")
+
     if source not in VALID_SOURCES:
         raise ValueError(f"Invalid source '{source}'. Valid values: {VALID_SOURCES}")
 

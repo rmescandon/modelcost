@@ -64,6 +64,14 @@ class TestCalculateCost:
         with pytest.raises(ValueError, match="Invalid source"):
             calculate_cost("gpt-4o", 100, 50, source="unknown")
 
+    @pytest.mark.parametrize(
+        ("input_tokens", "output_tokens"),
+        [(-1, 50), (100, -1), (-1, -1)],
+    )
+    def test_negative_tokens_raise_value_error(self, input_tokens, output_tokens):
+        with pytest.raises(ValueError, match=r"must be >= 0"):
+            calculate_cost("gpt-4o", input_tokens, output_tokens, source="litellm")
+
     def test_all_source_returns_three_sources_in_order(self):
         litellm_src = SourceCost("litellm", 0.001, 1.0, 2.0)
         openrouter_src = SourceCost("openrouter", 0.002, 1.5, 3.0)

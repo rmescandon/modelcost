@@ -67,6 +67,12 @@ class TestLoadCache:
         assert load_cache("litellm") == litellm_models
         assert load_cache("openrouter") == openrouter_models
 
+    def test_returns_empty_dict_when_cache_is_invalid_json(self):
+        cache_module.CACHE_FILE.write_text("{not-valid-json")
+
+        result = load_cache("openrouter")
+        assert result == {}
+
 
 class TestSaveCache:
     def test_creates_file_if_not_exists(self):
@@ -114,3 +120,12 @@ class TestSaveCache:
         save_cache("litellm", models)
         result = load_cache("litellm")
         assert result == models
+
+    def test_save_recovers_when_existing_cache_is_invalid_json(self):
+        cache_module.CACHE_FILE.write_text("{broken-json")
+
+        models = {"gpt-4o": {"prompt": 0.000003, "completion": 0.000015}}
+        save_cache("litellm", models)
+
+        data = json.loads(cache_module.CACHE_FILE.read_text())
+        assert data["litellm"]["models"] == models
