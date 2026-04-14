@@ -31,7 +31,29 @@ modelcost --source all gpt-4o 1000 500
 modelcost --json gpt-4o 1000 500
 ```
 
-List available models:
+### Cached and reasoning tokens
+
+Modern LLM APIs charge differently for cached input and reasoning output tokens.
+Pass them as optional flags — they default to 0 so existing usage is unchanged.
+
+```bash
+# Cached input tokens (served from prompt cache)
+modelcost gpt-4o 1000 500 --cached-input-tokens 200
+
+# Cache creation tokens (first-time cache writes)
+modelcost gpt-4o 1000 500 --cache-creation-input-tokens 100
+
+# Reasoning tokens (subset of output_tokens, e.g. o1/R1 thinking)
+modelcost deepseek/deepseek-r1 2000 5000 --reasoning-tokens 3000
+
+# All together
+modelcost gpt-4.1-mini 1000 500 \
+  --cached-input-tokens 200 \
+  --cache-creation-input-tokens 100 \
+  --reasoning-tokens 150
+```
+
+### List models
 
 ```bash
 modelcost models
@@ -40,7 +62,7 @@ modelcost models --filter gpt
 modelcost models --json
 ```
 
-CLI help:
+### Help
 
 ```bash
 modelcost --help
@@ -52,13 +74,26 @@ modelcost models --help
 ```python
 from modelcost.calculator import calculate_cost, list_models
 
+# Basic usage (backward compatible)
 result = calculate_cost("gpt-4o", 1000, 500)
 
 for source in result.available_sources:
     print(f"{source.source}: ${source.total_cost_usd:.6f}")
 
-litellm_cost = next(s for s in result.sources if s.source == "litellm")
-print(litellm_cost.price_per_million_input, litellm_cost.price_per_million_output)
+# With cached and reasoning tokens
+result = calculate_cost(
+    "gpt-4.1-mini",
+    input_tokens=1000,
+    output_tokens=500,
+    cached_input_tokens=200,
+    cache_creation_input_tokens=100,
+    reasoning_tokens=150,
+)
+
+s = result.sources[0]
+print(f"${s.total_cost_usd:.6f}")
+print(f"  cache read:  ${s.price_per_million_cache_read}/M")
+print(f"  reasoning:   ${s.price_per_million_reasoning}/M")
 
 models = list_models("openrouter")
 ```
@@ -67,15 +102,62 @@ models = list_models("openrouter")
 
 `calculate_cost()` returns a `CostResult` with:
 - `model`, `input_tokens`, `output_tokens`
+- `cached_input_tokens`, `cache_creation_input_tokens`, `reasoning_tokens` (0 when not used)
 - `sources`: list of `SourceCost` objects
 - `available_sources`: only sources with prices found
 
 Each `SourceCost` includes:
 - `source`
 - `total_cost_usd`
-- `price_per_million_input`
-- `price_per_million_output`
+- `price_per_million_input`, `price_per_million_output`
+- `price_per_million_cache_read`, `price_per_million_cache_creation`, `price_per_million_reasoning` (present only when the source has specific pricing for these)
 - `error` (when not available)
+
+### Cost formula
+
+All subset tokens (`cached_input_tokens`, `cache_creation_input_tokens`, `reasoning_tokens`)
+are treated as **subsets** of their parent total and are clamped accordingly:
+
+```
+text_input  = input_tokens  - cached_input - cache_creation
+text_output = output_tokens - reasoning_tokens
+
+total = text_input     * input_rate
+      + cached_input   * cache_read_rate    (fallback: input_rate)
+      + cache_creation * cache_creation_rate (fallback: input_rate)
+      + text_output    * output_rate
+      + reasoning      * reasoning_rate      (fallback: output_rate)
+```
+
+This matches how most APIs report usage — `input_tokens` and `output_tokens` are the
+totals including cached/reasoning, and the detail fields are subsets.
+When a specific rate is missing, the base rate for that category is used as fallback.
+
+### JSON output
+
+`--json` / `result.to_dict()` includes the new fields only when non-zero:
+
+```json
+{
+  "model": "gpt-4.1-mini",
+  "input_tokens": 1000,
+  "output_tokens": 500,
+  "cached_input_tokens": 200,
+  "reasoning_tokens": 150,
+  "costs": [
+    {
+      "source": "litellm",
+      "total_cost_usd": 0.001148,
+      "price_per_million_input": 0.4,
+      "price_per_million_output": 1.6,
+      "price_per_million_cache_read": 0.1,
+      "price_per_million_cache_creation": 0.48,
+      "price_per_million_reasoning": 1.6,
+      "error": null
+    }
+  ]
+}
+```
 
 ## Caching
 
@@ -86,3 +168,4 @@ Each `SourceCost` includes:
 - Prices are fetched at runtime from the upstream catalogs.
 - If a model is missing in a source, that source is marked as unavailable.
 - Network sources are fetched in parallel for the `all` option.
+- `tokencost` does not expose cache/reasoning pricing — when used with `source="all"`, its cost may be higher than `litellm` for calls that include cached or reasoning tokens.

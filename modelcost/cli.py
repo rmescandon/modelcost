@@ -33,14 +33,50 @@ def main() -> None:
     type=click.Choice(VALID_SOURCES),
     help="Pricing source.",
 )
+@click.option(
+    "--cached-input-tokens",
+    default=0,
+    show_default=False,
+    type=int,
+    help="Tokens served from cache (charged at cache-read rate).",
+)
+@click.option(
+    "--cache-creation-input-tokens",
+    default=0,
+    show_default=False,
+    type=int,
+    help="Tokens written to cache for the first time.",
+)
+@click.option(
+    "--reasoning-tokens",
+    default=0,
+    show_default=False,
+    type=int,
+    help="Thinking/reasoning output tokens (subset of output_tokens).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 def cost_cmd(
-    model: str, input_tokens: int, output_tokens: int, source: str, as_json: bool
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    source: str,
+    cached_input_tokens: int,
+    cache_creation_input_tokens: int,
+    reasoning_tokens: int,
+    as_json: bool,
 ) -> None:
     """Calculate the cost for MODEL with INPUT_TOKENS and OUTPUT_TOKENS."""
     # ── Calculation mode ──────────────────────────────────────────────
     try:
-        result = calculate_cost(model, input_tokens, output_tokens, source=source)
+        result = calculate_cost(
+            model,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            reasoning_tokens=reasoning_tokens,
+            source=source,
+        )
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -57,9 +93,15 @@ def cost_cmd(
             click.echo(f"unavailable — {s.error}", err=True)
             sys.exit(1)
     else:
-        click.echo(
-            f"Model: {result.model}  ({result.input_tokens} in / {result.output_tokens} out)\n"
-        )
+        parts = [f"{result.input_tokens} in", f"{result.output_tokens} out"]
+        if result.cached_input_tokens:
+            parts.append(f"{result.cached_input_tokens} cached")
+        if result.cache_creation_input_tokens:
+            parts.append(f"{result.cache_creation_input_tokens} cache-create")
+        if result.reasoning_tokens:
+            parts.append(f"{result.reasoning_tokens} reasoning")
+        header = " / ".join(parts)
+        click.echo(f"Model: {result.model}  ({header})\n")
         for s in result.sources:
             if s.available:
                 click.echo(f"  [{s.source:<12}] ${s.total_cost_usd:.6f} USD")

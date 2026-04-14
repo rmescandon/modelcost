@@ -61,6 +61,22 @@ def _multi_result():
     )
 
 
+def _multi_result_with_extras():
+    return CostResult(
+        model="gpt-4o",
+        input_tokens=1000,
+        output_tokens=500,
+        sources=[
+            SourceCost("litellm", 0.005, 3.0, 15.0),
+            SourceCost("openrouter", 0.006, 3.2, 16.0),
+        ],
+        single_source=False,
+        cached_input_tokens=200,
+        cache_creation_input_tokens=100,
+        reasoning_tokens=150,
+    )
+
+
 # ---------------------------------------------------------------------------
 # cost command
 # ---------------------------------------------------------------------------
@@ -139,6 +155,33 @@ class TestCostCommand:
 
         assert "unavailable" in result.output
 
+    def test_multi_source_header_shows_extended_tokens(self):
+        runner = CliRunner()
+        with patch(
+            "modelcost.cli.calculate_cost",
+            return_value=_multi_result_with_extras(),
+        ):
+            result = runner.invoke(
+                main, ["cost", "gpt-4o", "1000", "500", "--source", "all"]
+            )
+
+        assert result.exit_code == 0
+        assert "200 cached" in result.output
+        assert "100 cache-create" in result.output
+        assert "150 reasoning" in result.output
+
+    def test_multi_source_header_omits_zero_extended_tokens(self):
+        runner = CliRunner()
+        with patch("modelcost.cli.calculate_cost", return_value=_multi_result()):
+            result = runner.invoke(
+                main, ["cost", "gpt-4o", "100", "50", "--source", "all"]
+            )
+
+        assert result.exit_code == 0
+        assert "100 in / 50 out)" in result.output
+        assert "cached" not in result.output
+        assert "reasoning" not in result.output
+
     def test_source_option_is_forwarded(self):
         runner = CliRunner()
         with patch(
@@ -149,7 +192,15 @@ class TestCostCommand:
                 main, ["cost", "gpt-4o", "100", "50", "--source", "openrouter"]
             )
 
-        mock_calc.assert_called_once_with("gpt-4o", 100, 50, source="openrouter")
+        mock_calc.assert_called_once_with(
+            "gpt-4o",
+            100,
+            50,
+            cached_input_tokens=0,
+            cache_creation_input_tokens=0,
+            reasoning_tokens=0,
+            source="openrouter",
+        )
 
     def test_model_and_tokens_forwarded_correctly(self):
         runner = CliRunner()
@@ -159,7 +210,111 @@ class TestCostCommand:
             runner.invoke(main, ["cost", "claude-3-5-sonnet", "200", "75"])
 
         mock_calc.assert_called_once_with(
-            "claude-3-5-sonnet", 200, 75, source="litellm"
+            "claude-3-5-sonnet",
+            200,
+            75,
+            cached_input_tokens=0,
+            cache_creation_input_tokens=0,
+            reasoning_tokens=0,
+            source="litellm",
+        )
+
+    def test_cached_input_tokens_flag(self):
+        runner = CliRunner()
+        with patch(
+            "modelcost.cli.calculate_cost", return_value=_single_result()
+        ) as mock_calc:
+            runner.invoke(
+                main,
+                ["cost", "gpt-4o", "1000", "500", "--cached-input-tokens", "200"],
+            )
+
+        mock_calc.assert_called_once_with(
+            "gpt-4o",
+            1000,
+            500,
+            cached_input_tokens=200,
+            cache_creation_input_tokens=0,
+            reasoning_tokens=0,
+            source="litellm",
+        )
+
+    def test_cache_creation_input_tokens_flag(self):
+        runner = CliRunner()
+        with patch(
+            "modelcost.cli.calculate_cost", return_value=_single_result()
+        ) as mock_calc:
+            runner.invoke(
+                main,
+                [
+                    "cost",
+                    "gpt-4o",
+                    "1000",
+                    "500",
+                    "--cache-creation-input-tokens",
+                    "100",
+                ],
+            )
+
+        mock_calc.assert_called_once_with(
+            "gpt-4o",
+            1000,
+            500,
+            cached_input_tokens=0,
+            cache_creation_input_tokens=100,
+            reasoning_tokens=0,
+            source="litellm",
+        )
+
+    def test_reasoning_tokens_flag(self):
+        runner = CliRunner()
+        with patch(
+            "modelcost.cli.calculate_cost", return_value=_single_result()
+        ) as mock_calc:
+            runner.invoke(
+                main,
+                ["cost", "gpt-4o", "1000", "500", "--reasoning-tokens", "150"],
+            )
+
+        mock_calc.assert_called_once_with(
+            "gpt-4o",
+            1000,
+            500,
+            cached_input_tokens=0,
+            cache_creation_input_tokens=0,
+            reasoning_tokens=150,
+            source="litellm",
+        )
+
+    def test_all_new_flags_together(self):
+        runner = CliRunner()
+        with patch(
+            "modelcost.cli.calculate_cost", return_value=_single_result()
+        ) as mock_calc:
+            runner.invoke(
+                main,
+                [
+                    "cost",
+                    "gpt-4o",
+                    "1000",
+                    "500",
+                    "--cached-input-tokens",
+                    "200",
+                    "--cache-creation-input-tokens",
+                    "100",
+                    "--reasoning-tokens",
+                    "150",
+                ],
+            )
+
+        mock_calc.assert_called_once_with(
+            "gpt-4o",
+            1000,
+            500,
+            cached_input_tokens=200,
+            cache_creation_input_tokens=100,
+            reasoning_tokens=150,
+            source="litellm",
         )
 
 

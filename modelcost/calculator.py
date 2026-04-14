@@ -29,17 +29,38 @@ def calculate_cost(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    *,
+    cached_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
     source: str = "litellm",
 ) -> CostResult:
-    if input_tokens < 0 or output_tokens < 0:
-        raise ValueError("input_tokens and output_tokens must be >= 0")
+    if any(
+        v < 0
+        for v in (
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+            reasoning_tokens,
+        )
+    ):
+        raise ValueError("All token counts must be >= 0")
 
     if source not in VALID_SOURCES:
         raise ValueError(f"Invalid source '{source}'. Valid values: {VALID_SOURCES}")
 
     active = ["litellm", "openrouter", "tokencost"] if source == "all" else [source]
 
-    sources = _fetch_all(model, input_tokens, output_tokens, active)
+    sources = _fetch_all(
+        model,
+        input_tokens,
+        output_tokens,
+        active,
+        cached_input_tokens=cached_input_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
 
     return CostResult(
         model=model,
@@ -47,11 +68,21 @@ def calculate_cost(
         output_tokens=output_tokens,
         sources=sources,
         single_source=source != "all",  # output formatting flag
+        cached_input_tokens=cached_input_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
 def _fetch_all(
-    model: str, input_tokens: int, output_tokens: int, active: list[str]
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    active: list[str],
+    *,
+    cached_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> list[SourceCost]:
     network_tasks = {
         name: fn
@@ -68,7 +99,15 @@ def _fetch_all(
         with ThreadPoolExecutor(max_workers=len(network_tasks)) as executor:
             futures = {
                 executor.submit(
-                    _compute, name, fn, model, input_tokens, output_tokens
+                    _compute,
+                    name,
+                    fn,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                    reasoning_tokens=reasoning_tokens,
                 ): name
                 for name, fn in network_tasks.items()
             }
@@ -84,7 +123,15 @@ def _fetch_all(
 
 
 def _compute(
-    source_name: str, fetch_fn, model: str, input_tokens: int, output_tokens: int
+    source_name: str,
+    fetch_fn,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    cached_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> SourceCost:
     try:
         prices = fetch_fn()
@@ -101,13 +148,44 @@ def _compute(
                 price_per_million_output=None,
                 error=f"Model '{model}' not found",
             )
-        cost = pricing["prompt"] * input_tokens + pricing["completion"] * output_tokens
-        return SourceCost(
+
+        prompt_rate = pricing["prompt"]
+        completion_rate = pricing["completion"]
+        cache_read_rate = pricing.get("cache_read", prompt_rate)
+        cache_creation_rate = pricing.get("cache_creation", prompt_rate)
+        reasoning_rate = pricing.get("reasoning", completion_rate)
+
+        # All subset tokens are clamped so they never exceed the parent total.
+        effective_cached = min(cached_input_tokens, input_tokens)
+        effective_creation = min(
+            cache_creation_input_tokens, input_tokens - effective_cached
+        )
+        text_input = input_tokens - effective_cached - effective_creation
+
+        effective_reasoning = min(reasoning_tokens, output_tokens)
+        text_output = output_tokens - effective_reasoning
+
+        cost = (
+            text_input * prompt_rate
+            + effective_cached * cache_read_rate
+            + effective_creation * cache_creation_rate
+            + text_output * completion_rate
+            + effective_reasoning * reasoning_rate
+        )
+
+        result = SourceCost(
             source=source_name,
             total_cost_usd=cost,
-            price_per_million_input=pricing["prompt"] * 1_000_000,
-            price_per_million_output=pricing["completion"] * 1_000_000,
+            price_per_million_input=prompt_rate * 1_000_000,
+            price_per_million_output=completion_rate * 1_000_000,
         )
+        if "cache_read" in pricing:
+            result.price_per_million_cache_read = cache_read_rate * 1_000_000
+        if "cache_creation" in pricing:
+            result.price_per_million_cache_creation = cache_creation_rate * 1_000_000
+        if "reasoning" in pricing:
+            result.price_per_million_reasoning = reasoning_rate * 1_000_000
+        return result
     except Exception as e:
         return SourceCost(
             source=source_name,
