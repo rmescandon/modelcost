@@ -113,6 +113,52 @@ Each `SourceCost` includes:
 - `price_per_million_cache_read`, `price_per_million_cache_creation`, `price_per_million_reasoning` (present only when the source has specific pricing for these)
 - `error` (when not available)
 
+### Cost formula
+
+All subset tokens (`cached_input_tokens`, `cache_creation_input_tokens`, `reasoning_tokens`)
+are treated as **subsets** of their parent total and are clamped accordingly:
+
+```
+text_input  = input_tokens  - cached_input - cache_creation
+text_output = output_tokens - reasoning_tokens
+
+total = text_input     * input_rate
+      + cached_input   * cache_read_rate    (fallback: input_rate)
+      + cache_creation * cache_creation_rate (fallback: input_rate)
+      + text_output    * output_rate
+      + reasoning      * reasoning_rate      (fallback: output_rate)
+```
+
+This matches how most APIs report usage — `input_tokens` and `output_tokens` are the
+totals including cached/reasoning, and the detail fields are subsets.
+When a specific rate is missing, the base rate for that category is used as fallback.
+
+### JSON output
+
+`--json` / `result.to_dict()` includes the new fields only when non-zero:
+
+```json
+{
+  "model": "gpt-4.1-mini",
+  "input_tokens": 1000,
+  "output_tokens": 500,
+  "cached_input_tokens": 200,
+  "reasoning_tokens": 150,
+  "costs": [
+    {
+      "source": "litellm",
+      "total_cost_usd": 0.001148,
+      "price_per_million_input": 0.4,
+      "price_per_million_output": 1.6,
+      "price_per_million_cache_read": 0.1,
+      "price_per_million_cache_creation": 0.48,
+      "price_per_million_reasoning": 1.6,
+      "error": null
+    }
+  ]
+}
+```
+
 ## Caching
 
 `openrouter` responses are cached in `~/.modelcost_cache.json` for 1 hour.

@@ -324,24 +324,23 @@ class TestComputeExtendedPricing:
     """Tests for cached input, cache creation, and reasoning tokens in _compute."""
 
     def test_cost_with_all_token_types(self):
-        """Full cost formula: input + cache_read + cache_creation + text_output + reasoning."""
+        """Full cost formula: text_input + cache_read + cache_creation + text_output + reasoning."""
         fetch_fn = MagicMock(return_value=FAKE_PRICES_WITH_EXTRAS)
         result = _compute(
             "litellm",
             fetch_fn,
             "gpt-4.1-mini",
-            1000,  # input_tokens
-            500,  # output_tokens
+            1000,  # input_tokens (total, includes cached + creation)
+            500,  # output_tokens (total, includes reasoning)
             cached_input_tokens=200,
             cache_creation_input_tokens=100,
             reasoning_tokens=150,
         )
 
-        # cost = 1000*4e-7 + 200*1e-7 + 100*4.8e-7 + 350*1.6e-6 + 150*1.6e-6
-        #      = 0.0004 + 0.00002 + 0.000048 + 0.00056 + 0.00024
-        #      = 0.001268
+        # text_input = 1000 - 200 - 100 = 700, text_output = 500 - 150 = 350
+        # cost = 700*4e-7 + 200*1e-7 + 100*4.8e-7 + 350*1.6e-6 + 150*1.6e-6
         expected = (
-            1000 * 4e-7
+            (1000 - 200 - 100) * 4e-7
             + 200 * 1e-7
             + 100 * 4.8e-7
             + (500 - 150) * 1.6e-6
@@ -364,8 +363,8 @@ class TestComputeExtendedPricing:
             cached_input_tokens=200,
         )
 
-        # cache_read falls back to prompt: 200 * 0.000003
-        expected = 1000 * 0.000003 + 200 * 0.000003 + 500 * 0.000015
+        # cache_read falls back to prompt rate; text_input = 1000 - 200 = 800
+        expected = (1000 - 200) * 0.000003 + 200 * 0.000003 + 500 * 0.000015
         assert result.total_cost_usd == pytest.approx(expected)
         assert result.price_per_million_cache_read is None
 
@@ -401,6 +400,40 @@ class TestComputeExtendedPricing:
 
         # effective_reasoning = min(500, 100) = 100, text_output = 0
         expected = 1000 * 4e-7 + 0 * 1.6e-6 + 100 * 1.6e-6
+        assert result.total_cost_usd == pytest.approx(expected)
+
+    def test_cached_tokens_clamped_to_input_tokens(self):
+        """cached_input_tokens > input_tokens should be clamped."""
+        fetch_fn = MagicMock(return_value=FAKE_PRICES_WITH_EXTRAS)
+        result = _compute(
+            "litellm",
+            fetch_fn,
+            "gpt-4.1-mini",
+            100,  # input_tokens
+            500,
+            cached_input_tokens=800,  # more than input
+        )
+
+        # effective_cached = min(800, 100) = 100, text_input = 0
+        expected = 0 * 4e-7 + 100 * 1e-7 + 500 * 1.6e-6
+        assert result.total_cost_usd == pytest.approx(expected)
+
+    def test_cache_creation_clamped_to_remaining_input(self):
+        """cache_creation is clamped to input_tokens - cached."""
+        fetch_fn = MagicMock(return_value=FAKE_PRICES_WITH_EXTRAS)
+        result = _compute(
+            "litellm",
+            fetch_fn,
+            "gpt-4.1-mini",
+            500,  # input_tokens
+            200,
+            cached_input_tokens=300,
+            cache_creation_input_tokens=400,  # only 200 remain
+        )
+
+        # effective_cached = 300, effective_creation = min(400, 500-300) = 200
+        # text_input = 500 - 300 - 200 = 0
+        expected = 0 * 4e-7 + 300 * 1e-7 + 200 * 4.8e-7 + 200 * 1.6e-6
         assert result.total_cost_usd == pytest.approx(expected)
 
     def test_backward_compat_no_new_params(self):
@@ -447,7 +480,7 @@ class TestCalculateCostExtended:
 
         s = result.sources[0]
         expected = (
-            1000 * 4e-7
+            (1000 - 200 - 100) * 4e-7
             + 200 * 1e-7
             + 100 * 4.8e-7
             + (500 - 150) * 1.6e-6
@@ -581,8 +614,8 @@ class TestRealWorldPricingPatterns:
             cached_input_tokens=3000,
         )
 
-        # input: 5000 * 3e-6, cache: 3000 * 7.5e-7, output: 2000 * 1.5e-5
-        expected = 5000 * 3e-06 + 3000 * 7.5e-07 + 2000 * 1.5e-05
+        # text_input: (5000-3000) * 3e-6, cache: 3000 * 7.5e-7, output: 2000 * 1.5e-5
+        expected = (5000 - 3000) * 3e-06 + 3000 * 7.5e-07 + 2000 * 1.5e-05
         assert result.total_cost_usd == pytest.approx(expected)
         assert result.price_per_million_cache_read == pytest.approx(0.75)
         assert result.price_per_million_reasoning is None
@@ -604,19 +637,19 @@ class TestRealWorldPricingPatterns:
         assert result.total_cost_usd == pytest.approx(expected)
 
     def test_deepseek_r1_cache_hit_pricing(self):
-        """DeepSeek R1: cache_read from cache_hit fallback (25% of input)."""
+        """DeepSeek R1: cache_read from cache_hit fallback; cached clamped to input."""
         fetch_fn = MagicMock(return_value=DEEPSEEK_R1_PRICES)
         result = _compute(
             "litellm",
             fetch_fn,
             "deepseek/deepseek-r1",
-            2000,
+            10000,
             1000,
             cached_input_tokens=8000,
         )
 
-        # input: 2000 * 5.5e-7, cache: 8000 * 1.4e-7, output: 1000 * 2.19e-6
-        expected = 2000 * 5.5e-07 + 8000 * 1.4e-07 + 1000 * 2.19e-06
+        # text_input: (10000-8000) * 5.5e-7, cache: 8000 * 1.4e-7, output: 1000 * 2.19e-6
+        expected = (10000 - 8000) * 5.5e-07 + 8000 * 1.4e-07 + 1000 * 2.19e-06
         assert result.total_cost_usd == pytest.approx(expected)
         assert result.price_per_million_cache_read == pytest.approx(0.14)
 
@@ -654,14 +687,18 @@ class TestRealWorldPricingPatterns:
             "litellm",
             fetch_fn,
             "full-model",
-            2000,  # input
-            5000,  # output
+            10000,  # input (total, includes cached)
+            5000,  # output (total, includes reasoning)
             cached_input_tokens=8000,
             reasoning_tokens=3000,
         )
 
-        # input: 2000*5.5e-7, cache: 8000*1.4e-7, text_out: 2000*2.19e-6, reasoning: 3000*3e-6
+        # text_input: (10000-8000)*5.5e-7, cache: 8000*1.4e-7,
+        # text_out: (5000-3000)*2.19e-6, reasoning: 3000*3e-6
         expected = (
-            2000 * 5.5e-07 + 8000 * 1.4e-07 + (5000 - 3000) * 2.19e-06 + 3000 * 3e-06
+            (10000 - 8000) * 5.5e-07
+            + 8000 * 1.4e-07
+            + (5000 - 3000) * 2.19e-06
+            + 3000 * 3e-06
         )
         assert result.total_cost_usd == pytest.approx(expected)

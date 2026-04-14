@@ -29,6 +29,7 @@ def calculate_cost(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    *,
     cached_input_tokens: int = 0,
     cache_creation_input_tokens: int = 0,
     reasoning_tokens: int = 0,
@@ -114,7 +115,6 @@ def _fetch_all(
                 results[futures[future]] = future.result()
 
     if "tokencost" in active:
-
         results["tokencost"] = _tokencost_source(model, input_tokens, output_tokens)
 
     # Preserve order: litellm -> openrouter -> tokencost
@@ -130,7 +130,8 @@ def _compute(
     output_tokens: int,
     *,
     cached_input_tokens: int = 0,
-    cache_creation_input_tokens: int = 0,    reasoning_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> SourceCost:
     try:
         prices = fetch_fn()
@@ -154,13 +155,20 @@ def _compute(
         cache_creation_rate = pricing.get("cache_creation", prompt_rate)
         reasoning_rate = pricing.get("reasoning", completion_rate)
 
+        # All subset tokens are clamped so they never exceed the parent total.
+        effective_cached = min(cached_input_tokens, input_tokens)
+        effective_creation = min(
+            cache_creation_input_tokens, input_tokens - effective_cached
+        )
+        text_input = input_tokens - effective_cached - effective_creation
+
         effective_reasoning = min(reasoning_tokens, output_tokens)
         text_output = output_tokens - effective_reasoning
 
         cost = (
-            input_tokens * prompt_rate
-            + cached_input_tokens * cache_read_rate
-            + cache_creation_input_tokens * cache_creation_rate
+            text_input * prompt_rate
+            + effective_cached * cache_read_rate
+            + effective_creation * cache_creation_rate
             + text_output * completion_rate
             + effective_reasoning * reasoning_rate
         )
